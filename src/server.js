@@ -3,6 +3,7 @@ import session from 'express-session';
 import mysql from 'mysql2';
 import cors from 'cors';
 import { config } from 'dotenv';
+import OpenAI from "openai";
 
 // Use require for express-mysql-session
 const MySQLStore = require('express-mysql-session')(session); // Fixes the issue
@@ -24,7 +25,22 @@ const pool = mysql.createPool({
   database: process.env.DB_DATABASE
 });
 
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY,
+});
+
 const sessionStore = new MySQLStore({}, pool.promise());
+
+const formatDate = (date) => {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0'); // Months are 0-indexed
+  const day = String(date.getDate()).padStart(2, '0');
+  const hours = String(date.getHours()).padStart(2, '0');
+  const minutes = String(date.getMinutes()).padStart(2, '0');
+  const seconds = String(date.getSeconds()).padStart(2, '0');
+
+  return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
+};
 
 app.use(session({
   //key: 'reallyavatar_cookie',  // The name of the session cookie
@@ -57,7 +73,7 @@ app.post('/login', async (req, res) => {
   } catch (error) {
     res.status(500).json({ error: error.message });
   }
-});
+}); 
 
 app.post('/logout', (req, res) => {
   // Destroy the session
@@ -72,6 +88,113 @@ app.post('/logout', (req, res) => {
     return res.status(200).json({ message: 'Logout successful' });
   });
 });
+
+app.get('/asst_list/:id', async (req, res) => {
+  try {
+    const clientId = req.params.id;
+    const [results] = await pool.promise().query(
+      'SELECT asst_id, name, instructions, avatar_name, DATE_FORMAT(updated_at, "%Y-%m-%d %H:%i:%s") as updated_at FROM assistants WHERE client_id = ?', [clientId]
+    );
+    if (results.length > 0) {
+      res.send(results);
+    } else {
+      res.status(401).json({ message: 'Failed to fetch Assistants List' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+app.get('/avatars_list/:id', async (req, res) => {
+  try {
+  const  clientId  = req.params.id;
+  const [results] = await pool.promise().query(
+    'SELECT name FROM client_avatars WHERE client_id = ?', [clientId]
+  );
+  if (results.length > 0) {
+    res.send(results);
+   } else {
+    res.status(401).json({ message: 'Failed to fetch Assistants List' });
+  }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.put('/update_assistant/:asst_id', async (req, res) => {
+  try {
+    const asst_id = req.params.asst_id;
+    const { name, instructions, avatar_name } = req.body;
+
+    const myUpdatedAssistant = await openai.beta.assistants.update(
+      asst_id, 
+      {
+        instructions: instructions, 
+        name: name, 
+      }
+    );
+
+    const [results] = await pool.promise().query(
+      'UPDATE assistants SET name = ?, instructions = ?, avatar_name = ? WHERE asst_id = ?',
+      [name, instructions, avatar_name, asst_id]
+    );
+
+ 
+    if (results.affectedRows > 0) {
+      res.status(200).json({
+        asst_id,
+        name,
+        instructions,
+        avatar_name,
+      });
+    } else {
+      res.status(404).json({ message: 'Assistant not found or no changes made' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+app.post('/create_assistant/:client_id', async (req, res) => {
+  try {
+    const clientId = req.params.client_id; 
+    const { name, instructions, avatar_name } = req.body; 
+    const currentTimestamp = formatDate(new Date());
+
+    const myAssistant = await openai.beta.assistants.create({
+      instructions: instructions, 
+      name: name,                 
+      model: "gpt-4o",           
+    });
+
+    const [results] = await pool.promise().query(
+      'INSERT INTO assistants (asst_id, client_id, name, instructions, avatar_name) VALUES (?, ?, ?, ?, ?)',
+      [myAssistant.id, clientId, name, instructions, avatar_name]
+    );
+
+    if (results.affectedRows > 0) {
+      res.status(201).json({
+        message: 'Assistant created successfully',
+        assistant: {
+          asst_id: myAssistant.id,
+          client_id: clientId,
+          name: name,
+          instructions: instructions,
+          avatar_name: avatar_name,
+          updated_at: currentTimestamp,
+        },
+      });
+    } else {
+      res.status(500).json({ message: 'Failed to save assistant in the database' });
+    }
+  } catch (error) {
+    // Handle errors gracefully and respond with a 500 status
+    console.error('Error creating assistant:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 
 app.listen(port, () => {
