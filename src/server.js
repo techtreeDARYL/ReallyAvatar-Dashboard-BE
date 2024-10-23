@@ -195,6 +195,42 @@ app.post('/create_assistant/:client_id', async (req, res) => {
   }
 });
 
+// Get all threads for a specific assistant
+app.get('/threads_list/:asstId', async (req, res) => {
+  try {
+    const asstId = req.params.asstId;
+    const [results] = await pool.promise().query(
+      'SELECT * FROM threads WHERE asst_id = ?', [asstId]
+    );
+    
+    if (results.length > 0) {
+      res.status(200).json(results);
+    } else {
+      res.status(404).json({ message: 'No threads found for the assistant.' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// Get all messages for a specific thread
+app.get('/messages_list/:threadId', async (req, res) => {
+  try {
+    const threadId = req.params.threadId;
+    const [results] = await pool.promise().query(
+      'SELECT * FROM messages WHERE thread_id = ?', [threadId]
+    );
+    
+    if (results.length > 0) {
+      res.status(200).json(results);
+    } else {
+      res.status(404).json({ message: 'No messages found for the thread.' });
+    }
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 
 app.listen(port, () => {
