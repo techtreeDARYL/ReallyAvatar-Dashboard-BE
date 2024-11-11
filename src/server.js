@@ -93,7 +93,7 @@ app.get('/asst_list/:id', async (req, res) => {
   try {
     const clientId = req.params.id;
     const [results] = await pool.promise().query(
-      'SELECT asst_id, name, instructions, avatar_name, DATE_FORMAT(updated_at, "%Y-%m-%d %H:%i:%s") as updated_at FROM assistants WHERE client_id = ?', [clientId]
+      'SELECT asst_id, name, instructions, avatar_name, model,temperature, top_p, DATE_FORMAT(updated_at, "%Y-%m-%d %H:%i:%s") as updated_at FROM assistants WHERE client_id = ? ORDER BY created_at DESC', [clientId]
     );
     if (results.length > 0) {
       res.send(results);
@@ -123,31 +123,47 @@ app.get('/avatars_list/:id', async (req, res) => {
 });
 
 app.put('/update_assistant/:asst_id', async (req, res) => {
+  
   try {
     const asst_id = req.params.asst_id;
-    const { name, instructions, avatar_name } = req.body;
-
+    const { name, instructions, avatar_name, model, temperature, top_p } = req.body;
+    console.log("Updating database with values:", {
+      name,
+      instructions,
+      avatar_name,
+      model,
+      temperature,
+      top_p,
+      asst_id
+    });
     const myUpdatedAssistant = await openai.beta.assistants.update(
       asst_id, 
       {
         instructions: instructions, 
         name: name, 
+        model: model,
+        top_p: top_p,
+        temperature: temperature
       }
     );
 
     const [results] = await pool.promise().query(
-      'UPDATE assistants SET name = ?, instructions = ?, avatar_name = ? WHERE asst_id = ?',
-      [name, instructions, avatar_name, asst_id]
+      'UPDATE assistants SET name = ?, instructions = ?, avatar_name = ?, model = ?, temperature = ?, top_p = ? WHERE asst_id = ?',
+      [name, instructions, avatar_name,  model, temperature, top_p, asst_id]
     );
 
  
     if (results.affectedRows > 0) {
-      res.status(200).json({
-        asst_id,
-        name,
-        instructions,
-        avatar_name,
-      });
+
+      const [updatedAssistant] = await pool.promise().query(
+        'SELECT asst_id, name, instructions, avatar_name, model, temperature, top_p, DATE_FORMAT(updated_at, "%Y-%m-%d %H:%i:%s") as updated_at FROM assistants WHERE asst_id = ?',
+        [asst_id]
+      );
+     if (updatedAssistant.length > 0) {
+        res.status(200).json(updatedAssistant[0]); // Send the updated assistant data back
+      } else {
+        res.status(404).json({ message: 'Assistant not found after update' });
+      }
     } else {
       res.status(404).json({ message: 'Assistant not found or no changes made' });
     }
@@ -181,8 +197,7 @@ app.post('/create_assistant/:client_id', async (req, res) => {
           client_id: clientId,
           name: name,
           instructions: instructions,
-          avatar_name: avatar_name,
-          updated_at: currentTimestamp,
+          avatar_name: avatar_name
         },
       });
     } else {
@@ -230,6 +245,117 @@ app.get('/messages_list/:threadId', async (req, res) => {
     res.status(500).json({ error: error.message });
   }
 });
+
+//For Dashboard - Assistant Activity
+app.get('/assistant-activity/:client_id', async (req, res) => {
+  const clientId = req.params.client_id;
+  const sql = `
+    SELECT MONTH(messages.timestamp) as month, COUNT(messages.id) as message_count
+    FROM messages
+    JOIN threads ON messages.thread_id = threads.thread_id
+    JOIN assistants ON threads.asst_id = assistants.asst_id
+    WHERE assistants.client_id = ?
+    GROUP BY MONTH(messages.timestamp)
+    ORDER BY MONTH(messages.timestamp);
+  `;
+  const [results] = await pool.promise().query(sql, [clientId]);
+  res.json(results);
+});
+
+//For Dashboard - Assistant Creation timeline
+app.get('/assistant-creation-timeline/:client_id', async (req, res) => {
+  const clientId = req.params.client_id;
+  const sql = `
+    SELECT YEAR(created_at) as year, MONTH(created_at) as month, COUNT(*) as assistant_count
+    FROM assistants
+    WHERE client_id = ?
+    GROUP BY YEAR(created_at), MONTH(created_at)
+    ORDER BY year, month;
+  `;
+  const [results] = await pool.promise().query(sql, [clientId]);
+  res.json(results);
+});
+
+
+//For Dashboard - Message Volume overtime
+app.get('/message-volume/:client_id', async (req, res) => {
+  const clientId = req.params.client_id;
+  const sql = `
+    SELECT WEEK(messages.timestamp) as week, COUNT(*) as message_count
+    FROM messages
+    JOIN threads ON messages.thread_id = threads.thread_id
+    JOIN assistants ON threads.asst_id = assistants.asst_id
+    WHERE assistants.client_id = ?
+    GROUP BY WEEK(messages.timestamp)
+    ORDER BY WEEK(messages.timestamp);
+  `;
+  const [results] = await pool.promise().query(sql, [clientId]);
+  res.json(results);
+});
+
+//For Dashboard - Average response time
+app.get('/average-response-time/:client_id', async (req, res) => {
+  const clientId = req.params.client_id;
+  const sql = `
+    SELECT response_times.asst_id, response_times.name, 
+       AVG(response_times.response_time) AS avg_response_time
+    FROM (
+        SELECT user_messages.thread_id, assistants.asst_id, assistants.name,
+              TIMESTAMPDIFF(SECOND, user_messages.timestamp, MIN(assistant_messages.timestamp)) AS response_time
+        FROM messages AS user_messages
+        JOIN messages AS assistant_messages 
+          ON user_messages.thread_id = assistant_messages.thread_id
+          AND assistant_messages.sender = 'assistant' 
+          AND user_messages.sender = 'user' 
+          AND assistant_messages.timestamp > user_messages.timestamp
+        JOIN threads ON user_messages.thread_id = threads.thread_id
+        JOIN assistants ON threads.asst_id = assistants.asst_id
+        WHERE assistants.client_id = ?
+        GROUP BY user_messages.id, assistants.asst_id
+    ) AS response_times
+    GROUP BY response_times.asst_id;
+  `;
+  const [results] = await pool.promise().query(sql, [clientId]);
+  res.json(results);
+});
+
+//For Dashboard - Thread Activity Over Time
+app.get('/thread-activity/:client_id', async (req, res) => {
+  const clientId = req.params.client_id;
+  const sql = `
+    SELECT MONTH(threads.created_at) as month, COUNT(*) as thread_count
+    FROM threads
+    JOIN assistants ON threads.asst_id = assistants.asst_id
+    WHERE assistants.client_id = ?
+    GROUP BY MONTH(threads.created_at)
+    ORDER BY MONTH(threads.created_at);
+  `;
+  const [results] = await pool.promise().query(sql, [clientId]);
+  res.json(results);
+});
+
+//For Dashboard - Most Active Thread
+app.get('/most-active-threads/:client_id', async (req, res) => {
+  const clientId = req.params.client_id;
+  const sql = `
+    SELECT threads.thread_id, COUNT(messages.id) as message_count
+    FROM threads
+    JOIN messages ON threads.thread_id = messages.thread_id
+    JOIN assistants ON threads.asst_id = assistants.asst_id
+    WHERE assistants.client_id = ?
+    GROUP BY threads.thread_id
+    ORDER BY message_count DESC
+    LIMIT 5;
+  `;
+  try {
+    const [results] = await pool.promise().query(sql, [clientId]);
+    res.json(results);
+  } catch (error) {
+    console.error("Error fetching most active threads:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
 
 
 
