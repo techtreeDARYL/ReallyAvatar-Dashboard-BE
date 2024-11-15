@@ -4,6 +4,9 @@ import mysql from 'mysql2';
 import cors from 'cors';
 import { config } from 'dotenv';
 import OpenAI from "openai";
+import path from 'path';
+import fs from 'fs';
+
 
 // Use require for express-mysql-session
 const MySQLStore = require('express-mysql-session')(session); // Fixes the issue
@@ -18,7 +21,7 @@ app.use(express.json()); // Built-in middleware for express to handle JSON
 
 // Create a MySQL pool
 const pool = mysql.createPool({
-  connectionLimit: 10,
+  connectionLimit: 50,
   host: process.env.DB_HOST,
   user: process.env.DB_USER,
   password: process.env.DB_PASSWORD,
@@ -183,12 +186,12 @@ app.post('/create_assistant/:client_id', async (req, res) => {
       name: name,                 
       model: "gpt-4o",           
     });
-
+    const start_ = await pool.promise().query('START TRANSACTION');
     const [results] = await pool.promise().query(
       'INSERT INTO assistants (asst_id, client_id, name, instructions, avatar_name) VALUES (?, ?, ?, ?, ?)',
       [myAssistant.id, clientId, name, instructions, avatar_name]
     );
-
+    const commit = await pool.promise().query('COMMIT');
     if (results.affectedRows > 0) {
       res.status(201).json({
         message: 'Assistant created successfully',
@@ -350,6 +353,56 @@ app.get('/most-active-threads/:client_id', async (req, res) => {
     res.json(results);
   } catch (error) {
     console.error("Error fetching most active threads:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+//Files
+app.get('/files_list/:asstId', async (req, res) => {
+  try {
+    const assistantId = req.params.asstId; // Assistant ID passed as a parameter
+    // Query to fetch files associated with the assistant
+    const [results] = await pool.promise().query(
+      `SELECT f.id, f.thread_id, f.file_name, f.file_size, f.timestamp
+       FROM files f
+       JOIN threads t ON f.thread_id = t.thread_id
+       WHERE t.asst_id = ?`,
+      [assistantId]
+    );
+
+    if (results.length > 0) {
+      res.send(results); // Send the list of files
+    } else {
+      res.status(200).json({ message: 'No files found for this assistant.', files: [] });
+    }
+  } catch (error) {
+    console.error('Error fetching files:', error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+
+app.get('/download/:fileName', async (req, res) => {
+  try {
+    const fileName = req.params.fileName; // File name from URL
+    const uploadsDirectory = process.env.UPLOADS_DIRECTORY || path.join(__dirname, 'uploads'); // Get uploads directory
+    const safeFileName = path.basename(fileName); // Sanitize the file name to prevent directory traversal
+    const filePath = path.join(uploadsDirectory, safeFileName); // Construct the full path
+
+    // Check if the file exists
+    if (!fs.existsSync(filePath)) {
+      return res.status(404).json({ error: 'File not found.' });
+    }
+
+    // Send the file to the client
+    res.download(filePath, safeFileName, (err) => {
+      if (err) {
+        console.error('Error while downloading the file:', err);
+        res.status(500).json({ error: 'Failed to download the file.' });
+      }
+    });
+  } catch (error) {
+    console.error('Error in download endpoint:', error);
     res.status(500).json({ error: error.message });
   }
 });
