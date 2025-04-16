@@ -6,7 +6,22 @@ import { config } from 'dotenv';
 import OpenAI from "openai";
 import path from 'path';
 import fs from 'fs';
+import multer from 'multer';
 
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, 'uploads/'); // make sure this folder exists
+  },
+  filename: (req, file, cb) => {
+    const timestamp = Date.now();
+    const ext = path.extname(file.originalname);
+    const base = path.basename(file.originalname, ext);
+    const safeName = `${base}-${timestamp}${ext}`;
+    cb(null, safeName);
+  }
+});
+
+const upload = multer({ storage });
 
 // Use require for express-mysql-session
 const MySQLStore = require('express-mysql-session')(session); // Fixes the issue
@@ -32,7 +47,7 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY,
 });
 
-const sessionStore = new MySQLStore({}, pool.promise());
+
 
 const formatDate = (date) => {
   const year = date.getFullYear();
@@ -45,6 +60,7 @@ const formatDate = (date) => {
   return `${year}-${month}-${day} ${hours}:${minutes}:${seconds}`;
 };
 
+const sessionStore = new MySQLStore({}, pool.promise());
 app.use(session({
   //key: 'reallyavatar_cookie',  // The name of the session cookie
   secret: process.env.SESSION_SECRET || 'techtreeglobal', // Ensure this is set in .env
@@ -96,7 +112,7 @@ app.get('/asst_list/:id', async (req, res) => {
   try {
     const clientId = req.params.id;
     const [results] = await pool.promise().query(
-      'SELECT asst_id, name, instructions, avatar_name, model,temperature, top_p, DATE_FORMAT(updated_at, "%Y-%m-%d %H:%i:%s") as updated_at FROM assistants WHERE client_id = ? ORDER BY created_at DESC', [clientId]
+      'SELECT asst_id, name, instructions, avatar_name, model,temperature, top_p, voice_id, isFS, background_id, DATE_FORMAT(updated_at, "%Y-%m-%d %H:%i:%s") as updated_at FROM assistants WHERE client_id = ? ORDER BY created_at DESC', [clientId]
     );
     if (results.length > 0) {
       res.send(results);
@@ -129,7 +145,7 @@ app.put('/update_assistant/:asst_id', async (req, res) => {
   
   try {
     const asst_id = req.params.asst_id;
-    const { name, instructions, avatar_name, model, temperature, top_p } = req.body;
+    const { name, instructions, avatar_name, model, temperature, top_p,voice_id,background_id } = req.body;
     console.log("Updating database with values:", {
       name,
       instructions,
@@ -137,7 +153,9 @@ app.put('/update_assistant/:asst_id', async (req, res) => {
       model,
       temperature,
       top_p,
-      asst_id
+      asst_id,
+      voice_id,
+      background_id
     });
     const myUpdatedAssistant = await openai.beta.assistants.update(
       asst_id, 
@@ -151,8 +169,8 @@ app.put('/update_assistant/:asst_id', async (req, res) => {
     );
 
     const [results] = await pool.promise().query(
-      'UPDATE assistants SET name = ?, instructions = ?, avatar_name = ?, model = ?, temperature = ?, top_p = ? WHERE asst_id = ?',
-      [name, instructions, avatar_name,  model, temperature, top_p, asst_id]
+      'UPDATE assistants SET name = ?, instructions = ?, avatar_name = ?, model = ?, temperature = ?, top_p = ?, voice_id = ?, background_id = ? WHERE asst_id = ?',
+      [name, instructions, avatar_name,  model, temperature, top_p, voice_id,background_id, asst_id]
     );
 
  
@@ -407,8 +425,284 @@ app.get('/download/:fileName', async (req, res) => {
   }
 });
 
+  app.put('/toggle_file_search/:asst_id', async (req, res) => {
+    const { enabled } = req.body;
+    const asstId = req.params.asst_id;
 
+    try {
+      const updateData = enabled
+        ?  { tools: [{ type: "file_search" }],}
+        : {  tools: [],};
+      const updated = await openai.beta.assistants.update(asstId, updateData);
 
+      await pool.promise().query(
+        'UPDATE assistants SET isFS = ? WHERE asst_id = ?',
+        [enabled ? 1 : 0, asstId]
+      );
+
+      res.status(200).json({
+        message: `File search ${enabled ? 'enabled' : 'disabled'}`,
+        assistant: updated,
+      });
+    } catch (error) {
+      console.error('Error toggling file search:', error.message);
+      res.status(500).json({ error: error.message });
+    }
+  });
+  
+  app.post('/upload_files/:asstId', upload.array('files', 10), async (req, res) => {
+    const assistantId = req.params.asstId;
+    const files = req.files;
+  
+    if (!files || files.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded' });
+    }
+  
+    try {
+      // 1. Check if vector store exists
+      const [rows] = await pool.promise().query(
+        `SELECT vector_store_id FROM assistant_files WHERE assistant_id = ? LIMIT 1`,
+        [assistantId]
+      );
+  
+      let vectorStoreId;
+  
+      if (rows.length > 0 && rows[0].vector_store_id) {
+        vectorStoreId = rows[0].vector_store_id;
+      } else {
+        const vectorStore = await openai.beta.vectorStores.create({
+          name: `vs_${assistantId}`
+        });
+        vectorStoreId = vectorStore.id;
+      }
+  
+      // 2. Rename files with proper extension
+      // for (const file of files) {
+      //   const ext = path.extname(file.originalname);
+      
+      //   if (!ext) {
+      //     console.warn(`Skipping file ${file.originalname}: missing extension`);
+      //     continue;
+      //   }
+      
+      //   const correctedPath = `${file.path}${ext}`;
+      
+      //   try {
+      //     fs.renameSync(file.path, correctedPath);
+      //     file.path = correctedPath;
+      //   } catch (err) {
+      //     console.error(`Failed to rename file ${file.originalname}:`, err);
+      //     return res.status(500).json({ error: 'File renaming failed' });
+      //   }
+      // }
+      
+  
+      // 3. Create readable streams
+  //     const fileStreams = files
+  // .filter(file => fs.existsSync(file.path)) // make sure the file is still there
+  // .map(file => fs.createReadStream(file.path));
+  // console.log("File paths used for streaming:", files.map(f => f.path));
+  const uploadedFiles = [];
+
+  const fileStreams = files.map(file => {
+    uploadedFiles.push({
+      name: file.originalname,
+      size: file.size
+    });
+  
+    return fs.createReadStream(file.path);
+  });
+
+  
+      // 4. Upload files to vector store and wait for processing
+      const batch = await openai.beta.vectorStores.fileBatches.uploadAndPoll(vectorStoreId, {
+        files: fileStreams
+      });
+      // 5. Clean up temp files
+      // for (const file of files) {
+      //   if (fs.existsSync(file.path)) {
+      //     fs.unlinkSync(file.path);
+      //   }
+      // }
+  
+      // 6. Save file metadata to DB
+      const list = await openai.beta.vectorStores.files.list(vectorStoreId);
+      const recentUploads = list.data.slice(-files.length); 
+      const savedFileData = recentUploads.map((file, index) => [
+        file.id,
+        uploadedFiles[index].name,
+        uploadedFiles[index].size,
+        assistantId,
+        vectorStoreId,
+        new Date()
+      ]);
+      
+
+      await pool.promise().query(
+        `INSERT INTO assistant_files (openai_file_id, file_name, file_size, assistant_id, vector_store_id, uploaded_at)
+         VALUES ?`,
+        [savedFileData]
+      );
+  
+      // 7. Attach vector store to assistant
+      await openai.beta.assistants.update(assistantId, {
+        tools: [{ type: "file_search" }],
+        tool_resources: {
+          file_search: {
+            vector_store_ids: [vectorStoreId]
+          }
+        }
+      });
+  
+      res.status(200).json({
+        message: 'Files uploaded, indexed, and attached to assistant successfully.',
+        files: savedFileData.map(([id, name, size]) => ({ id, name, size }))
+      });
+  
+    } catch (error) {
+      console.error('Upload error:', error);
+      res.status(500).json({ error: error.message || 'Upload failed' });
+    }
+  });
+
+  app.delete('/delete_file/:fileId', async (req, res) => {
+    const fileId = req.params.fileId;
+    console.log(fileId);
+    try {
+  
+      const [rows] = await pool.promise().query(
+        'SELECT * FROM assistant_files WHERE openai_file_id = ? LIMIT 1',
+        [fileId]
+      );
+  
+      if (rows.length === 0) {
+        return res.status(404).json({ error: 'File not found in database' });
+      }
+  
+      const { file_name, vector_store_id } = rows[0];
+  
+  
+      await openai.beta.vectorStores.files.del(vector_store_id, fileId);
+     
+      const localPath = path.join('uploads', file_name);
+      if (fs.existsSync(localPath)) {
+        fs.unlinkSync(localPath);
+      }
+  
+    
+      await pool.promise().query(
+        'DELETE FROM assistant_files WHERE openai_file_id = ?',
+        [fileId]
+      );
+  
+      res.status(200).json({ message: 'File deleted successfully' });
+  
+    } catch (err) {
+      console.error('Delete file error:', err.message);
+      res.status(500).json({ error: 'Failed to delete file' });
+    }
+  });
+  
+  app.get('/asst_files/:assistantId', async (req, res) => {
+    const assistantId = req.params.assistantId;
+  
+    try {
+      const [rows] = await pool.promise().query(
+        'SELECT openai_file_id AS id, file_name AS name, file_size AS size FROM assistant_files WHERE assistant_id = ? ORDER BY uploaded_at DESC',
+        [assistantId]
+      );
+  
+      res.json(rows);
+    } catch (err) {
+      console.error('Failed to fetch files:', err.message);
+      res.status(500).json({ error: 'Failed to load files' });
+    }
+  });
+
+  app.post('/add_function/:assistantId', async (req, res) => {
+    const assistantId = req.params.assistantId;
+    const raw = req.body; // entire function object from frontend
+    
+    const tool = {
+      type: "function",
+      function: raw // wrap what user submitted
+    };
+  
+    try {
+      // Get current assistant tools
+      const assistant = await openai.beta.assistants.retrieve(assistantId);
+      const existingTools = assistant.tools || [];
+  
+      // Update assistant with new tool
+      const updated = await openai.beta.assistants.update(assistantId, {
+        tools: [...existingTools, tool]
+      });
+      // Save full tool object in DB
+      await pool.promise().query(
+        `INSERT INTO assistant_functions (assistant_id, name, parameters)
+         VALUES (?, ?, ?)`,
+        [assistantId, raw.name, JSON.stringify(tool)]
+      );
+  
+      res.status(200).json({ message: 'Function added', tools: updated.tools });
+    } catch (err) {
+      console.error('Function add error:', err.message);
+      res.status(500).json({ error: 'Failed to add function'.err.message });
+    }
+  });
+
+  app.get('/functions/:assistantId', async (req, res) => {
+    const assistantId = req.params.assistantId;
+  
+    try {
+      const [rows] = await pool.promise().query(
+        `SELECT name FROM assistant_functions WHERE assistant_id = ?`,
+        [assistantId]
+      );
+  
+      const functions = rows.map(row => ({
+        name: row.name,
+      }));
+  
+      res.status(200).json(functions);
+    } catch (err) {
+      console.error('Failed to load functions:', err.message);
+      res.status(500).json({ error: 'Failed to fetch functions' });
+    }
+  });
+  
+  app.delete('/functions/:assistantId/:functionName', async (req, res) => {
+    const { assistantId, functionName } = req.params;
+  
+    try {
+      // 1. Get current assistant tools
+      const assistant = await openai.beta.assistants.retrieve(assistantId);
+      const updatedTools = (assistant.tools || []).filter(tool => {
+        return !(tool.type === 'function' && tool.function?.name === functionName);
+      });
+  
+      // 2. Update assistant with filtered tools (function removed)
+      await openai.beta.assistants.update(assistantId, {
+        tools: updatedTools
+      });
+  
+      // 3. Delete from DB
+      await pool.promise().query(
+        'DELETE FROM assistant_functions WHERE assistant_id = ? AND name = ?',
+        [assistantId, functionName]
+      );
+  
+      res.status(200).json({ message: 'Function deleted successfully' });
+    } catch (err) {
+      console.error('Function delete error:', err.message);
+      res.status(500).json({ error: 'Failed to delete function' });
+    }
+  });
+  
+  
+  
+  
+  
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
