@@ -112,7 +112,7 @@ app.get('/asst_list/:id', async (req, res) => {
   try {
     const clientId = req.params.id;
     const [results] = await pool.promise().query(
-      'SELECT asst_id, name, instructions, avatar_name, model,temperature, top_p, voice_id, isFS, background_id, DATE_FORMAT(updated_at, "%Y-%m-%d %H:%i:%s") as updated_at FROM assistants WHERE client_id = ? ORDER BY created_at DESC', [clientId]
+      'SELECT asst_id, name, instructions, avatar_name, model,temperature, top_p, voice_id, isFS, background_id, lang, DATE_FORMAT(updated_at, "%Y-%m-%d %H:%i:%s") as updated_at FROM assistants WHERE client_id = ? ORDER BY created_at DESC', [clientId]
     );
     if (results.length > 0) {
       res.send(results);
@@ -145,18 +145,19 @@ app.put('/update_assistant/:asst_id', async (req, res) => {
   
   try {
     const asst_id = req.params.asst_id;
-    const { name, instructions, avatar_name, model, temperature, top_p,voice_id,background_id } = req.body;
-    console.log("Updating database with values:", {
-      name,
-      instructions,
-      avatar_name,
-      model,
-      temperature,
-      top_p,
-      asst_id,
-      voice_id,
-      background_id
-    });
+    const { name, instructions, avatar_name, model, temperature, top_p,voice_id,background_id,language } = req.body;
+    // console.log("Updating database with values:", {
+    //   name,
+    //   instructions,
+    //   avatar_name,
+    //   model,
+    //   temperature,
+    //   top_p,
+    //   asst_id,
+    //   voice_id,
+    //   background_id,
+    //   language
+    // });
     const myUpdatedAssistant = await openai.beta.assistants.update(
       asst_id, 
       {
@@ -169,8 +170,8 @@ app.put('/update_assistant/:asst_id', async (req, res) => {
     );
 
     const [results] = await pool.promise().query(
-      'UPDATE assistants SET name = ?, instructions = ?, avatar_name = ?, model = ?, temperature = ?, top_p = ?, voice_id = ?, background_id = ? WHERE asst_id = ?',
-      [name, instructions, avatar_name,  model, temperature, top_p, voice_id,background_id, asst_id]
+      'UPDATE assistants SET name = ?, instructions = ?, avatar_name = ?, model = ?, temperature = ?, top_p = ?, voice_id = ?, background_id = ?, lang  = ? WHERE asst_id = ?',
+      [name, instructions, avatar_name,  model, temperature, top_p, voice_id,background_id, language, asst_id]
     );
 
  
