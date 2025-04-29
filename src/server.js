@@ -117,7 +117,7 @@ app.get('/asst_list/:id', async (req, res) => {
     if (results.length > 0) {
       res.send(results);
     } else {
-      res.status(401).json({ message: 'Failed to fetch Assistants List' });
+      res.status(200).json({ message: 'Failed to fetch Assistants List' });
     }
   } catch (error) {
     res.status(500).json({ error: error.message });
@@ -129,12 +129,12 @@ app.get('/avatars_list/:id', async (req, res) => {
   try {
   const  clientId  = req.params.id;
   const [results] = await pool.promise().query(
-    'SELECT name FROM client_avatars WHERE client_id = ?', [clientId]
+    'SELECT name FROM client_avatars WHERE client_id = ? or client_id = 2', [clientId]
   );
   if (results.length > 0) {
     res.send(results);
    } else {
-    res.status(401).json({ message: 'Failed to fetch Assistants List' });
+    res.status(200).json({ message: 'Failed to fetch Assistants List' });
   }
   } catch (error) {
     res.status(500).json({ error: error.message });
