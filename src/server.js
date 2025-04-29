@@ -35,9 +35,9 @@ const port = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json()); // Built-in middleware for express to handle JSON
-// const key = fsync.readFileSync('./certs/private.key');
-// const cert = fsync.readFileSync('./certs/certificate.crt');
-// const server = https.createServer({ key, cert }, app);
+const key = fsync.readFileSync('./certs/private.key');
+const cert = fsync.readFileSync('./certs/certificate.crt');
+const server = https.createServer({ key, cert }, app);
 
 // Create a MySQL pool
 const pool = mysql.createPool({
@@ -710,7 +710,7 @@ app.get('/download/:fileName', async (req, res) => {
   
   
 
-app.listen(port, () => {
+server.listen(port, () => {
   console.log(`Server running on port ${port}`);
 });
 
