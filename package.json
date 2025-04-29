@@ -18,6 +18,7 @@
     "express": "^4.21.1",
     "express-mysql-session": "^3.0.3",
     "express-session": "^1.18.1",
+    "https": "^1.0.0",
     "multer": "^1.4.5-lts.2",
     "mysql2": "^3.11.3",
     "openai": "^4.68.2"

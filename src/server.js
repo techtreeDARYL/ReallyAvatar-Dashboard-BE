@@ -7,6 +7,8 @@ import OpenAI from "openai";
 import path from 'path';
 import fs from 'fs';
 import multer from 'multer';
+import fsync from "fs";
+import https from "https";
 
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
@@ -33,6 +35,9 @@ const port = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json()); // Built-in middleware for express to handle JSON
+// const key = fsync.readFileSync('./certs/private.key');
+// const cert = fsync.readFileSync('./certs/certificate.crt');
+// const server = https.createServer({ key, cert }, app);
 
 // Create a MySQL pool
 const pool = mysql.createPool({
