@@ -117,7 +117,7 @@ app.get('/asst_list/:id', async (req, res) => {
   try {
     const clientId = req.params.id;
     const [results] = await pool.promise().query(
-      'SELECT asst_id, name, instructions, avatar_name, model,temperature, top_p, voice_id, isFS, background_id, lang, DATE_FORMAT(updated_at, "%Y-%m-%d %H:%i:%s") as updated_at FROM assistants WHERE client_id = ? ORDER BY created_at DESC', [clientId]
+      'SELECT asst_id, name, instructions, avatar_name, model,temperature, top_p, voice_id, isFS, background_id, lang, DATE_FORMAT(updated_at, "%Y-%m-%d %H:%i:%s") as updated_at FROM assistants WHERE client_id = ? and isDeleted = 0 ORDER BY created_at DESC', [clientId]
     );
     if (results.length > 0) {
       res.send(results);
@@ -704,6 +704,23 @@ app.get('/download/:fileName', async (req, res) => {
       res.status(500).json({ error: 'Failed to delete function' });
     }
   });
+
+  app.put('/softdelete_asst/:asst_id',  async (req,res)=>{
+    const asst_id = req.params.asst_id;
+     
+    try {
+        const [results] = await pool.promise().query(
+       'UPDATE assistants SET isDeleted = 1 WHERE asst_id = ?',
+       [ asst_id] );
+     
+      res.status(200).json({ message: 'Avatar deleted successfully' });
+    } catch (err) {
+     console.error('Avatar delete error:', err.message);
+     res.status(500).json({ error: 'Failed to delete Avatar' });
+    }
+   
+
+ });
   
   
   
