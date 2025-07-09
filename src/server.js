@@ -22,6 +22,7 @@ const storage = multer.diskStorage({
     cb(null, safeName);
   }
 });
+const UPLOADS_DIR = 'C:/Users/administrator/Desktop/090624/ReallyAvatar-Backend-090624/uploads';
 
 const upload = multer({ storage });
 
@@ -35,8 +36,12 @@ const port = process.env.PORT || 5000;
 
 app.use(cors());
 app.use(express.json()); // Built-in middleware for express to handle JSON
-const key = fsync.readFileSync('./certs/private.key');
-const cert = fsync.readFileSync('./certs/certificate.crt');
+const certPath = 'C:/Certbot/live/reallyavatar.com';
+
+const key = fs.readFileSync(path.join(certPath, 'privkey.pem'), 'utf8');
+const cert = fs.readFileSync(path.join(certPath, 'fullchain.pem'), 'utf8');
+// const key = fsync.readFileSync('./certs/private.key');
+// const cert = fsync.readFileSync('./certs/certificate.crt');
 const server = https.createServer({ key, cert }, app);
 
 // Create a MySQL pool
@@ -134,7 +139,8 @@ app.get('/avatars_list/:id', async (req, res) => {
   try {
   const  clientId  = req.params.id;
   const [results] = await pool.promise().query(
-    'SELECT name FROM client_avatars WHERE client_id = ? or client_id = 2', [clientId]
+    //'SELECT CAST(name AS CHAR(255)) FROM client_avatars WHERE client_id = ? UNION SELECT CAST(name AS CHAR(255)) FROM public_avatars', [clientId]
+    'select name from public_avatars'
   );
   if (results.length > 0) {
     res.send(results);
@@ -604,7 +610,7 @@ app.get('/download/:fileName', async (req, res) => {
       res.status(200).json({ message: 'File deleted successfully' });
   
     } catch (err) {
-      console.error('Delete file error:', err.message);
+      console.error('Delete file error:', err);
       res.status(500).json({ error: 'Failed to delete file' });
     }
   });
@@ -620,7 +626,7 @@ app.get('/download/:fileName', async (req, res) => {
   
       res.json(rows);
     } catch (err) {
-      console.error('Failed to fetch files:', err.message);
+      console.error('Failed to fetch files:', err);
       res.status(500).json({ error: 'Failed to load files' });
     }
   });
@@ -652,8 +658,8 @@ app.get('/download/:fileName', async (req, res) => {
   
       res.status(200).json({ message: 'Function added', tools: updated.tools });
     } catch (err) {
-      console.error('Function add error:', err.message);
-      res.status(500).json({ error: 'Failed to add function'.err.message });
+      console.error('Function add error:', err);
+      res.status(500).json({ error: 'Failed to add function'.err });
     }
   });
 
@@ -672,7 +678,7 @@ app.get('/download/:fileName', async (req, res) => {
   
       res.status(200).json(functions);
     } catch (err) {
-      console.error('Failed to load functions:', err.message);
+      console.error('Failed to load functions:', err);
       res.status(500).json({ error: 'Failed to fetch functions' });
     }
   });
@@ -700,7 +706,7 @@ app.get('/download/:fileName', async (req, res) => {
   
       res.status(200).json({ message: 'Function deleted successfully' });
     } catch (err) {
-      console.error('Function delete error:', err.message);
+      console.error('Function delete error:', err);
       res.status(500).json({ error: 'Failed to delete function' });
     }
   });
@@ -715,12 +721,24 @@ app.get('/download/:fileName', async (req, res) => {
      
       res.status(200).json({ message: 'Avatar deleted successfully' });
     } catch (err) {
-     console.error('Avatar delete error:', err.message);
+     console.error('Avatar delete error:', err);
      res.status(500).json({ error: 'Failed to delete Avatar' });
     }
    
 
  });
+
+ app.get('/download/:fileName', (req, res) => {
+  const fileName = req.params.fileName;
+  const filePath = path.join(UPLOADS_DIR, fileName);
+
+  res.download(filePath, fileName, (err) => {
+    if (err) {
+      console.error('Download error:', err);
+      res.status(404).send('File not found.');
+    }
+  });
+});
   
   
   
