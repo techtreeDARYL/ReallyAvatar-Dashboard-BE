@@ -22,6 +22,7 @@ const storage = multer.diskStorage({
     cb(null, safeName);
   }
 });
+const UPLOADS_DIR = 'C:/Users/administrator/Desktop/090624/ReallyAvatar-Backend-090624/uploads';
 
 const upload = multer({ storage });
 
@@ -117,7 +118,7 @@ app.get('/asst_list/:id', async (req, res) => {
   try {
     const clientId = req.params.id;
     const [results] = await pool.promise().query(
-      'SELECT asst_id, name, instructions, avatar_name, model,temperature, top_p, voice_id, isFS, background_id, lang, DATE_FORMAT(updated_at, "%Y-%m-%d %H:%i:%s") as updated_at FROM assistants WHERE client_id = ? ORDER BY created_at DESC', [clientId]
+      'SELECT asst_id, name, instructions, avatar_name, model,temperature, top_p, voice_id, isFS, background_id, lang, DATE_FORMAT(updated_at, "%Y-%m-%d %H:%i:%s") as updated_at FROM assistants WHERE client_id = ? and isDeleted = 0 ORDER BY created_at DESC', [clientId]
     );
     if (results.length > 0) {
       res.send(results);
@@ -705,9 +706,165 @@ app.get('/download/:fileName', async (req, res) => {
     }
   });
   
+  app.put('/softdelete_asst/:asst_id',  async (req,res)=>{
+     const asst_id = req.params.asst_id;
+      
+     try {
+         const [results] = await pool.promise().query(
+        'UPDATE assistants SET isDeleted = 1 WHERE asst_id = ?',
+        [ asst_id] );
+      
+       res.status(200).json({ message: 'Avatar deleted successfully' });
+     } catch (err) {
+      console.error('Avatar delete error:', err.message);
+      res.status(500).json({ error: 'Failed to delete Avatar' });
+     }
+    
+
+  });
   
-  
-  
+  app.get('/download/:fileName', (req, res) => {
+  const fileName = req.params.fileName;
+  const filePath = path.join(UPLOADS_DIR, fileName);
+
+  res.download(filePath, fileName, (err) => {
+    if (err) {
+      console.error('Download error:', err);
+      res.status(404).send('File not found.');
+    }
+  });
+});
+
+app.get('/dashboard/thread-stats/:client_id', async (req, res) => {
+  const clientId = req.params.client_id;
+  const sql = `
+    SELECT 
+      DATE(t.created_at) AS date,
+      COUNT(*) AS new_threads
+    FROM threads t
+    JOIN assistants a ON t.asst_id = a.asst_id
+    WHERE a.client_id = ?
+    GROUP BY DATE(t.created_at)
+    ORDER BY date ASC;
+  `;
+  try {
+    const [results] = await pool.promise().query(sql, [clientId]);
+    res.json(results);
+  } catch (err) {
+    console.error('Error fetching thread stats:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/dashboard/message-stats/:client_id', async (req, res) => {
+  const clientId = req.params.client_id;
+  const sql = `
+    SELECT DATE(m.timestamp) AS date, COUNT(*) AS message_count
+    FROM messages m
+    JOIN threads t ON m.thread_id = t.thread_id
+    JOIN assistants a ON t.asst_id = a.asst_id
+    WHERE a.client_id = ?
+    GROUP BY DATE(m.timestamp)
+    ORDER BY DATE(m.timestamp);
+  `;
+  try {
+    const [results] = await pool.promise().query(sql, [clientId]);
+    res.json(results);
+  } catch (err) {
+    console.error('Error fetching message stats:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/dashboard/file-stats/:client_id', async (req, res) => {
+  const clientId = req.params.client_id;
+  const sql = `
+    SELECT f.id, f.thread_id, f.file_name, f.file_size, f.timestamp
+    FROM files f
+    JOIN threads t ON f.thread_id = t.thread_id
+    JOIN assistants a ON t.asst_id = a.asst_id
+    WHERE a.client_id = ?
+    ORDER BY f.timestamp DESC
+    LIMIT 10;
+  `;
+  try {
+    const [results] = await pool.promise().query(sql, [clientId]);
+    res.json(results);
+  } catch (err) {
+    console.error('Error fetching file stats:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/dashboard/response-time-stats/:client_id', async (req, res) => {
+  const clientId = req.params.client_id;
+  const sql = `
+      SELECT 
+    t.thread_id,
+    ROUND(AVG(TIMESTAMPDIFF(SECOND, user_msg.timestamp, assistant_msg.timestamp)), 2) AS avg_response_time
+  FROM messages user_msg
+  JOIN messages assistant_msg 
+    ON assistant_msg.thread_id = user_msg.thread_id
+  AND assistant_msg.timestamp > user_msg.timestamp
+  AND assistant_msg.sender = 'assistant'
+  JOIN threads t 
+    ON user_msg.thread_id = t.thread_id
+  JOIN assistants a 
+    ON t.asst_id = a.asst_id
+  WHERE user_msg.sender = 'user'
+    AND a.client_id = ?
+    AND NOT EXISTS (
+      SELECT 1 FROM messages m
+      WHERE m.thread_id = user_msg.thread_id
+        AND m.timestamp > user_msg.timestamp
+        AND m.timestamp < assistant_msg.timestamp
+        AND m.sender = 'assistant'
+    )
+  GROUP BY t.thread_id;
+
+  `;
+  try {
+    const [results] = await pool.promise().query(sql, [clientId]);
+    res.json(results.map(r => ({
+  ...r,
+  avg_response_time: Number(r.avg_response_time)
+})));
+  } catch (err) {
+    console.error('Error fetching response time stats:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// For Dashboard - Messages Heatmap (Day vs Hour)
+app.get('/dashboard/messages-heatmap/:client_id', async (req, res) => {
+  const clientId = req.params.client_id;
+  const sql = `
+    SELECT 
+      DAYOFWEEK(m.timestamp) - 1 AS day_index, -- Sunday=0
+      HOUR(m.timestamp) AS hour,
+      COUNT(*) AS count
+    FROM messages m
+    JOIN threads t ON m.thread_id = t.thread_id
+    JOIN assistants a ON t.asst_id = a.asst_id
+    WHERE a.client_id = ?
+    GROUP BY day_index, hour
+    ORDER BY day_index, hour;
+  `;
+  try {
+    const [results] = await pool.promise().query(sql, [clientId]);
+    const days = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
+    const data = results.map(row => ({
+      day: days[row.day_index],
+      hour: row.hour,
+      count: row.count
+    }));
+    res.json(data);
+  } catch (err) {
+    console.error('Error fetching messages heatmap:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
   
 
 app.listen(port, () => {
