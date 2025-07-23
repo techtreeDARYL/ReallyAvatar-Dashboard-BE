@@ -200,45 +200,109 @@ app.put('/update_assistant/:asst_id', async (req, res) => {
   }
 });
 
+// app.post('/create_assistant/:client_id', async (req, res) => {
+//   try {
+//     const clientId = req.params.client_id; 
+//     const { name, instructions, avatar_name } = req.body; 
+//     const currentTimestamp = formatDate(new Date());
+
+//     const myAssistant = await openai.beta.assistants.create({
+//       instructions: instructions, 
+//       name: name,                 
+//       model: "gpt-4o",           
+//     });
+//     const start_ = await pool.promise().query('START TRANSACTION');
+//     const [results] = await pool.promise().query(
+//       'INSERT INTO assistants (asst_id, client_id, name, instructions, avatar_name) VALUES (?, ?, ?, ?, ?)',
+//       [myAssistant.id, clientId, name, instructions, avatar_name]
+//     );
+//     const commit = await pool.promise().query('COMMIT');
+//     if (results.affectedRows > 0) {
+//       res.status(201).json({
+//         message: 'Assistant created successfully',
+//         assistant: {
+//           asst_id: myAssistant.id,
+//           client_id: clientId,
+//           name: name,
+//           instructions: instructions,
+//           avatar_name: avatar_name
+//         },
+//       });
+//     } else {
+//       res.status(500).json({ message: 'Failed to save assistant in the database' });
+//     }
+//   } catch (error) {
+//     // Handle errors gracefully and respond with a 500 status
+//     console.error('Error creating assistant:', error);
+//     res.status(500).json({ error: error.message });
+//   }
+// });
+
+// Get all threads for a specific assistant
+
 app.post('/create_assistant/:client_id', async (req, res) => {
+  const clientId = req.params.client_id;
+  const { name, instructions, avatar_name, template_id } = req.body;
+
+  let assistantData;
+
   try {
-    const clientId = req.params.client_id; 
-    const { name, instructions, avatar_name } = req.body; 
-    const currentTimestamp = formatDate(new Date());
+    if (template_id) {
+      const [templates] = await pool.promise().query(
+        'SELECT * FROM assistant_templates WHERE id = ?',
+        [template_id]
+      );
+      if (templates.length === 0) {
+        return res.status(404).json({ message: 'Template not found' });
+      }
+
+      const template = templates[0];
+      assistantData = {
+        name: name || template.name,
+        instructions: instructions || template.instructions,
+        avatar_name: avatar_name || template.avatar_name,
+        model: template.model,
+        temperature: template.temperature,
+        top_p: template.top_p,
+        voice_id: template.voice_id,
+        background_id: template.background_id,
+        lang: template.lang
+      };
+    } else {
+      assistantData = { name, instructions, avatar_name, model: 'gpt-4o', temperature: 1.0, top_p: 1.0 };
+    }
 
     const myAssistant = await openai.beta.assistants.create({
-      instructions: instructions, 
-      name: name,                 
-      model: "gpt-4o",           
+      instructions: assistantData.instructions,
+      name: assistantData.name,
+      model: assistantData.model,
+      temperature: assistantData.temperature,
+      top_p: assistantData.top_p
     });
-    const start_ = await pool.promise().query('START TRANSACTION');
-    const [results] = await pool.promise().query(
-      'INSERT INTO assistants (asst_id, client_id, name, instructions, avatar_name) VALUES (?, ?, ?, ?, ?)',
-      [myAssistant.id, clientId, name, instructions, avatar_name]
+
+    const [result] = await pool.promise().query(
+      'INSERT INTO assistants (asst_id, client_id, name, instructions, avatar_name, model, temperature, top_p, voice_id, background_id, lang) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      [
+        myAssistant.id, clientId, assistantData.name, assistantData.instructions, assistantData.avatar_name,
+        assistantData.model, assistantData.temperature, assistantData.top_p, assistantData.voice_id,
+        assistantData.background_id, assistantData.lang
+      ]
     );
-    const commit = await pool.promise().query('COMMIT');
-    if (results.affectedRows > 0) {
-      res.status(201).json({
-        message: 'Assistant created successfully',
-        assistant: {
-          asst_id: myAssistant.id,
-          client_id: clientId,
-          name: name,
-          instructions: instructions,
-          avatar_name: avatar_name
-        },
-      });
-    } else {
-      res.status(500).json({ message: 'Failed to save assistant in the database' });
-    }
+
+    res.status(201).json({
+      message: 'Assistant created from template successfully',
+      assistant: {
+        asst_id: myAssistant.id,
+        client_id: clientId,
+        ...assistantData
+      }
+    });
   } catch (error) {
-    // Handle errors gracefully and respond with a 500 status
     console.error('Error creating assistant:', error);
     res.status(500).json({ error: error.message });
   }
 });
 
-// Get all threads for a specific assistant
 app.get('/threads_list/:asstId', async (req, res) => {
   try {
     const asstId = req.params.asstId;
@@ -865,7 +929,21 @@ app.get('/dashboard/messages-heatmap/:client_id', async (req, res) => {
   }
 });
 
-  
+app.get('/templates/:client_group', async (req, res) => {
+  const group = req.params.client_group;
+
+  try {
+    const [results] = await pool.promise().query(
+      'SELECT * FROM assistant_templates WHERE client_group = ?',
+      [group]
+    );
+    res.json(results);
+  } catch (err) {
+    console.error('Error fetching templates:', err.message);
+    res.status(500).json({ error: 'Template fetch failed' });
+  }
+});
+
 
 app.listen(port, () => {
   console.log(`Server running on port ${port}`);
