@@ -49,9 +49,18 @@ const pool = mysql.createPool({
   database: process.env.DB_DATABASE
 });
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY,
-});
+// const openai = new OpenAI({
+//   apiKey: process.env.OPENAI_API_KEY,
+// });
+
+const getOpenAIClientForGroup = (groupName) => {
+  const key = process.env[`OPENAI_API_KEY_${groupName?.toUpperCase()}`];
+  if (!key) {
+    throw new Error(`Missing API key for group: ${groupName}`);
+  }
+  return new OpenAI({ apiKey: key });
+};
+
 
 
 
@@ -89,7 +98,13 @@ app.post('/login', async (req, res) => {
     );
     if (results.length > 0) {
       // Save user info in session
-      req.session.user = { id: results[0].id, email: results[0].email, name: results[0].name };
+      req.session.user = {
+        id: results[0].id,
+        email: results[0].email,
+        name: results[0].name,
+        role: results[0].role,             
+        client_group: results[0].client_group 
+      };
       res.status(200).json({ message: 'Login successful', user: results[0] });
       console.log('Session after login:', req.session); // Log session data for debugging
     } else {
@@ -151,19 +166,15 @@ app.put('/update_assistant/:asst_id', async (req, res) => {
   
   try {
     const asst_id = req.params.asst_id;
-    const { name, instructions, avatar_name, model, temperature, top_p,voice_id,background_id,language } = req.body;
-    // console.log("Updating database with values:", {
-    //   name,
-    //   instructions,
-    //   avatar_name,
-    //   model,
-    //   temperature,
-    //   top_p,
-    //   asst_id,
-    //   voice_id,
-    //   background_id,
-    //   language
-    // });
+    const { name, instructions, avatar_name, model, temperature, top_p,voice_id,background_id,language,client_group } = req.body;
+    const [rows] = await pool.promise().query(
+      `SELECT c.client_group FROM assistants a JOIN clients c ON a.client_id = c.id WHERE a.asst_id = ?`,
+      [asst_id]
+    );
+    if (!rows.length) return res.status(404).json({ message: "Assistant not found" });
+    const openai = getOpenAIClientForGroup(rows[0].client_group);
+
+  
     const myUpdatedAssistant = await openai.beta.assistants.update(
       asst_id, 
       {
@@ -242,6 +253,8 @@ app.put('/update_assistant/:asst_id', async (req, res) => {
 
 app.post('/create_assistant/:client_id', async (req, res) => {
   const clientId = req.params.client_id;
+  const clientGroup = req.body.client_group || req.query.group;
+  const openai = getOpenAIClientForGroup(clientGroup);
   const { name, instructions, avatar_name, template_id } = req.body;
 
   let assistantData;
@@ -497,10 +510,11 @@ app.get('/download/:fileName', async (req, res) => {
 });
 
   app.put('/toggle_file_search/:asst_id', async (req, res) => {
-    const { enabled } = req.body;
+    const { enabled, client_group } = req.body;
     const asstId = req.params.asst_id;
 
     try {
+      const openai = getOpenAIClientForGroup(client_group);
       const updateData = enabled
         ?  { tools: [{ type: "file_search" }],}
         : {  tools: [],};
@@ -523,6 +537,7 @@ app.get('/download/:fileName', async (req, res) => {
   
   app.post('/upload_files/:asstId', upload.array('files', 10), async (req, res) => {
     const assistantId = req.params.asstId;
+    const { client_group } = req.body;
     const files = req.files;
   
     if (!files || files.length === 0) {
@@ -530,6 +545,7 @@ app.get('/download/:fileName', async (req, res) => {
     }
   
     try {
+      const openai = getOpenAIClientForGroup(client_group);
       // 1. Check if vector store exists
       const [rows] = await pool.promise().query(
         `SELECT vector_store_id FROM assistant_files WHERE assistant_id = ? LIMIT 1`,
@@ -584,7 +600,7 @@ app.get('/download/:fileName', async (req, res) => {
     return fs.createReadStream(file.path);
   });
 
-  
+     
       // 4. Upload files to vector store and wait for processing
       const batch = await openai.beta.vectorStores.fileBatches.uploadAndPoll(vectorStoreId, {
         files: fileStreams
@@ -637,10 +653,12 @@ app.get('/download/:fileName', async (req, res) => {
   });
 
   app.delete('/delete_file/:fileId', async (req, res) => {
+
     const fileId = req.params.fileId;
-    console.log(fileId);
+    const client_group = req.body.client_group;
+    
     try {
-  
+      const openai = getOpenAIClientForGroup(client_group);
       const [rows] = await pool.promise().query(
         'SELECT * FROM assistant_files WHERE openai_file_id = ? LIMIT 1',
         [fileId]
@@ -692,15 +710,16 @@ app.get('/download/:fileName', async (req, res) => {
 
   app.post('/add_function/:assistantId', async (req, res) => {
     const assistantId = req.params.assistantId;
-    const raw = req.body; // entire function object from frontend
+    const { client_group, ...functionBody } = req.body;
     
     const tool = {
       type: "function",
-      function: raw // wrap what user submitted
+      function: functionBody // wrap what user submitted
     };
   
     try {
       // Get current assistant tools
+      const openai = getOpenAIClientForGroup(client_group);
       const assistant = await openai.beta.assistants.retrieve(assistantId);
       const existingTools = assistant.tools || [];
   
@@ -712,13 +731,14 @@ app.get('/download/:fileName', async (req, res) => {
       await pool.promise().query(
         `INSERT INTO assistant_functions (assistant_id, name, parameters)
          VALUES (?, ?, ?)`,
-        [assistantId, raw.name, JSON.stringify(tool)]
+        [assistantId, functionBody.name, JSON.stringify(tool)]
       );
   
       res.status(200).json({ message: 'Function added', tools: updated.tools });
     } catch (err) {
       console.error('Function add error:', err.message);
-      res.status(500).json({ error: 'Failed to add function'.err.message });
+      res.status(500).json({ error: `Failed to add function: ${err.message}` });
+
     }
   });
 
@@ -744,8 +764,9 @@ app.get('/download/:fileName', async (req, res) => {
   
   app.delete('/functions/:assistantId/:functionName', async (req, res) => {
     const { assistantId, functionName } = req.params;
-  
+    const client_group = req.body.client_group;
     try {
+       const openai = getOpenAIClientForGroup(client_group);
       // 1. Get current assistant tools
       const assistant = await openai.beta.assistants.retrieve(assistantId);
       const updatedTools = (assistant.tools || []).filter(tool => {
@@ -799,6 +820,7 @@ app.get('/download/:fileName', async (req, res) => {
   });
 });
 
+//ENRICO RAV
 app.get('/dashboard/thread-stats/:client_id', async (req, res) => {
   const clientId = req.params.client_id;
   const sql = `
@@ -929,6 +951,7 @@ app.get('/dashboard/messages-heatmap/:client_id', async (req, res) => {
   }
 });
 
+//Main Template Endpoints
 app.get('/templates/:client_group', async (req, res) => {
   const group = req.params.client_group;
 
@@ -941,6 +964,315 @@ app.get('/templates/:client_group', async (req, res) => {
   } catch (err) {
     console.error('Error fetching templates:', err.message);
     res.status(500).json({ error: 'Template fetch failed' });
+  }
+});
+
+app.get('/admin/templates', async (req, res) => {
+  const [rows] = await pool.promise().query('SELECT * FROM assistant_templates');
+  res.json(rows);
+});
+
+app.put('/admin/template/:id', async (req, res) => {
+  const id = req.params.id;
+  const {
+    name,
+    instructions,
+    avatar_name,
+    model,
+    temperature,
+    top_p,
+    voice_id,
+    background_id,
+    lang,
+    client_group
+  } = req.body;
+
+  try {
+    const [result] = await pool.promise().query(
+      `UPDATE assistant_templates SET 
+        name = ?, instructions = ?, avatar_name = ?, model = ?, 
+        temperature = ?, top_p = ?, voice_id = ?, background_id = ?, 
+        lang = ?, client_group = ?
+      WHERE id = ?`,
+      [name, instructions, avatar_name, model, temperature, top_p, voice_id, background_id, lang, client_group, id]
+    );
+
+    if (result.affectedRows > 0) {
+      res.status(200).json({ message: 'Template updated successfully' });
+    } else {
+      res.status(404).json({ message: 'Template not found' });
+    }
+  } catch (err) {
+    console.error('Template update failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/admin/template/:id', async (req, res) => {
+  const id = req.params.id;
+
+  try {
+    const [result] = await pool.promise().query(
+      'DELETE FROM assistant_templates WHERE id = ?', [id]
+    );
+
+    if (result.affectedRows > 0) {
+      res.status(200).json({ message: 'Template deleted successfully' });
+    } else {
+      res.status(404).json({ message: 'Template not found' });
+    }
+  } catch (err) {
+    console.error('Template delete failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/client-groups', async (req, res) => {
+  try {
+    const [rows] = await pool.promise().query(
+      'SELECT DISTINCT client_group FROM assistant_templates WHERE client_group IS NOT NULL'
+    );
+    res.json(rows.map(r => r.client_group));
+  } catch (err) {
+    console.error('Error fetching client groups:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/admin/assistants', async (req, res) => {
+  try {
+    const [rows] = await pool.promise().query(`
+      SELECT 
+        a.asst_id, a.name, a.avatar_name, a.model, a.instructions, 
+        a.temperature, a.top_p, a.voice_id, a.background_id, a.lang, a.isFS,
+        DATE_FORMAT(a.updated_at, "%Y-%m-%d %H:%i:%s") as updated_at,
+        c.name AS creator_name, c.client_group
+      FROM assistants a
+      JOIN clients c ON a.client_id = c.id
+      WHERE a.isDeleted = 0
+    `);
+
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching assistants:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/admin/assistant-details/:asst_id', async (req, res) => {
+  const asstId = req.params.asst_id;
+
+  try {
+    const [rows] = await pool.promise().query(`
+      SELECT 
+        a.name, a.instructions, a.avatar_name, a.model, a.temperature, a.top_p,
+        a.voice_id, a.background_id, a.lang, c.client_group
+      FROM assistants a
+      JOIN clients c ON a.client_id = c.id
+      WHERE a.asst_id = ?
+    `, [asstId]);
+
+    if (rows.length === 0) {
+      return res.status(404).json({ message: 'Assistant not found' });
+    }
+
+    res.json(rows[0]);
+  } catch (err) {
+    console.error('Error fetching assistant details:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/admin/template', async (req, res) => {
+  const {
+    name,
+    instructions,
+    avatar_name,
+    model,
+    temperature,
+    top_p,
+    voice_id,
+    background_id,
+    lang,
+    client_group
+  } = req.body;
+
+  try {
+    const [result] = await pool.promise().query(`
+      INSERT INTO assistant_templates (
+        name, instructions, avatar_name, model,
+        temperature, top_p, voice_id, background_id, lang, client_group
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [name, instructions, avatar_name, model, temperature, top_p, voice_id, background_id, lang, client_group]
+    );
+
+    res.status(201).json({ message: 'Template created successfully', id: result.insertId });
+  } catch (err) {
+    console.error('Template creation failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+//Groups Management
+app.get('/admin/groups', async (req, res) => {
+  try {
+    const [rows] = await pool.promise().query(`SELECT * FROM groups ORDER BY id DESC`);
+    res.json(rows);
+  } catch (err) {
+    console.error('Failed to fetch groups:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/admin/group', async (req, res) => {
+  const { name, description } = req.body;
+  try {
+    const [result] = await pool.promise().query(
+      `INSERT INTO groups (name, description) VALUES (?, ?)`,
+      [name, description || '']
+    );
+    res.status(201).json({ id: result.insertId });
+  } catch (err) {
+    console.error('Group creation failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/admin/group/:id', async (req, res) => {
+  const { name, description } = req.body;
+  const id = req.params.id;
+
+  try {
+    await pool.promise().query(
+      `UPDATE groups SET name = ?, description = ? WHERE id = ?`,
+      [name, description, id]
+    );
+    res.json({ message: 'Group updated successfully' });
+  } catch (err) {
+    console.error('Group update failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/admin/group/:id', async (req, res) => {
+  const id = req.params.id;
+  try {
+    await pool.promise().query(`DELETE FROM groups WHERE id = ?`, [id]);
+    res.json({ message: 'Group deleted successfully' });
+  } catch (err) {
+    console.error('Group delete failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+//Users Management
+app.get('/admin/users', async (req, res) => {
+  const group = req.query.group;
+
+  try {
+    const query = group
+      ? `SELECT * FROM clients WHERE client_group = ? ORDER BY id DESC`
+      : `SELECT * FROM clients ORDER BY id DESC`;
+
+    const [rows] = await pool.promise().query(query, group ? [group] : []);
+    res.json(rows);
+  } catch (err) {
+    console.error('Failed to fetch users:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/admin/user', async (req, res) => {
+  const { name, email, password, client_group, role, isActive } = req.body;
+
+  try {
+    await pool.promise().query(
+      `INSERT INTO clients (name, email, password, client_group, role, isActive)
+       VALUES (?, ?, ?, ?, ?, ?)`,
+      [name, email, password, client_group, role, isActive]
+    );
+    res.status(201).json({ message: 'User created successfully' });
+  } catch (err) {
+    console.error('User creation failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/admin/user/:id', async (req, res) => {
+  const id = req.params.id;
+  const { name, email, password, client_group, role, isActive } = req.body;
+
+  try {
+    await pool.promise().query(
+      `UPDATE clients SET name = ?, email = ?, password = ?, client_group = ?, role = ?, isActive = ?
+       WHERE id = ?`,
+      [name, email, password, client_group, role, isActive, id]
+    );
+    res.json({ message: 'User updated successfully' });
+  } catch (err) {
+    console.error('User update failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/admin/user/:id', async (req, res) => {
+  const id = req.params.id;
+
+  try {
+    await pool.promise().query(`DELETE FROM clients WHERE id = ?`, [id]);
+    res.json({ message: 'User deleted successfully' });
+  } catch (err) {
+    console.error('User delete failed:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+
+//Group Admin Endpoints
+app.get('/group/users', async (req, res) => {
+  const { group } = req.query;
+
+  if (!group) {
+    return res.status(400).json({ error: 'Missing group parameter' });
+  }
+
+  try {
+    const [rows] = await pool.promise().query(
+      `SELECT * FROM clients WHERE client_group = ? ORDER BY id DESC`,
+      [group]
+    );
+    res.json(rows);
+  } catch (err) {
+    console.error('Failed to fetch group users:', err.message);
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.get('/group/assistants', async (req, res) => {
+  const { group } = req.query;
+
+  if (!group) {
+    return res.status(400).json({ error: 'Missing group parameter' });
+  }
+
+  try {
+    const [rows] = await pool.promise().query(`
+      SELECT 
+      a.asst_id, a.name, a.avatar_name, a.model, a.instructions,
+      a.temperature, a.top_p, a.voice_id, a.background_id, a.lang, a.isFS,
+      DATE_FORMAT(a.updated_at, "%Y-%m-%d %H:%i:%s") as updated_at,
+      c.name AS creator_name, c.client_group
+      FROM assistants a
+      JOIN clients c ON a.client_id = c.id
+      WHERE a.isDeleted = 0 AND c.client_group = ?
+      ORDER BY a.updated_at DESC
+
+    `, [group]);
+
+    res.json(rows);
+  } catch (err) {
+    console.error('Error fetching group assistants:', err.message);
+    res.status(500).json({ error: err.message });
   }
 });
 
